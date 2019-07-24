@@ -30,7 +30,10 @@ class PachiAnalysis():
 		node_set(one_move,"CBM",answer) #Computer Best Move
 		
 		position_evaluation=pachi.get_all_pachi_moves()
-
+		
+		reference_color="w"
+		log("Pachi best answer=",answer)
+		
 		if "estimated score" in position_evaluation:
 			node_set(one_move,"ES",position_evaluation["estimated score"])
 		
@@ -52,8 +55,9 @@ class PachiAnalysis():
 			current_color=player_color	
 			first_variation_move=True
 			for one_deep_move in variation['sequence'].split(' '):
-				if one_deep_move.lower() in ["pass","resign"]:
-					log("Leaving the variation when encountering",one_deep_move.lower())
+				one_deep_move=one_deep_move.upper()
+				if one_deep_move in ["PASS","RESIGN"]:
+					log("Leaving the variation when encountering",one_deep_move)
 					break
 
 				i,j=gtp2ij(one_deep_move)
@@ -112,7 +116,7 @@ class PachiAnalysis():
 		return pachi
 
 def pachi_starting_procedure(sgf_g,profile,silentfail=False):
-	pachi=bot_starting_procedure("Pachi","Pachi UCT",Pachi_gtp,sgf_g,profile,silentfail)
+	pachi=bot_starting_procedure("Pachi","Pachi",Pachi_gtp,sgf_g,profile,silentfail)
 	if not pachi:
 		return False
 	
@@ -157,10 +161,13 @@ class Pachi_gtp(gtp):
 		pachi_working_directory=command[0][:-len(ntpath.basename(command[0]))]
 		command=[c.encode(sys.getfilesystemencoding()) for c in command]
 		
-		pachi_working_directory=pachi_working_directory.encode(sys.getfilesystemencoding())
-		if pachi_working_directory:
-			log("Pachi working directory:",pachi_working_directory)
-			self.process=subprocess.Popen(command,cwd=pachi_working_directory, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+		if sys.platform != "win32":
+			pachi_working_directory=pachi_working_directory.encode(sys.getfilesystemencoding())
+			if pachi_working_directory:
+				log("Pachi working directory:",pachi_working_directory)
+				self.process=subprocess.Popen(command,cwd=pachi_working_directory, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+			else:
+				self.process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 		else:
 			self.process=subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 		
@@ -180,48 +187,15 @@ class Pachi_gtp(gtp):
 	def play_black(self):
 		move=gtp.play_black(self)
 		self.undo()#this undo performs a clear board / reset, necessary for Pachi in self play
-		#if move.lower()!="resign":
 		self.place_black(move)
 		return move
 		
 	def play_white(self):
 		move=gtp.play_white(self)
 		self.undo()#this undo performs a clear board / reset, necessary for Pachi in self play
-		#if move.lower()!="resign":
 		self.place_white(move)
 		return move
 		
-	def get_heatmap(self):
-		while not self.stderr_queue.empty():
-			self.stderr_queue.get()
-		self.write("heatmap")
-		one_line=self.readline() #empty line
-		buff=[]
-		while len(buff)<self.size:
-			buff.append(self.stderr_queue.get())
-		buff.reverse()
-		number_coordinate=1
-		letters="abcdefghjklmnopqrst"[:self.size]
-		pn=[["NA" for i in range(self.size)] for j in range(self.size)] #pn: policy network
-		pn_values=[]
-		for i in range(self.size):
-			one_line=buff[i].strip()
-			if "winrate" in one_line:
-				continue
-			if "pass" in one_line:
-				continue
-			one_line=one_line.strip()
-			one_line=[int(s) for s in one_line.split()]
-			new_values=[[letter_coordinate+str(number_coordinate),int(value)/1000.] for letter_coordinate,value in zip(letters,one_line)]
-			for nv in new_values:
-				pn_values.append(nv)
-			number_coordinate+=1
-
-		for coordinates,value in pn_values:
-			i,j=gtp2ij(coordinates)
-			pn[i][j]=value
-		return pn
-
 	def quick_evaluation(self,color):
 		if color==2:
 			self.play_white()
@@ -251,29 +225,6 @@ class Pachi_gtp(gtp):
 			pass
 		
 		return txt
-	
-
-
-	"""def get_leela_influence(self):
-		self.write("influence")
-		one_line=self.readline() #empty line
-		buff=[]
-		while self.stderr_queue.empty():
-			sleep(.1)
-		while not self.stderr_queue.empty():
-			while not self.stderr_queue.empty():
-				buff.append(self.stderr_queue.get())
-			sleep(.1)
-		buff.reverse()
-		#log(buff)
-		influence=[]
-		for i in range(self.size):
-			one_line=buff[i].strip()
-			one_line=one_line.replace(".","0").replace("x","1").replace("o","2").replace("O","0").replace("X","0").replace("w","1").replace("b","2")
-			one_line=[int(s) for s in one_line.split(" ")]
-			influence.append(one_line)
-		
-		return influence"""
 
 	def get_all_pachi_moves(self):
 		buff=[]
@@ -297,8 +248,7 @@ class Pachi_gtp(gtp):
 				try:
 					line=err_line.split(" |")[3].strip()
 					line=line.split(" ")
-					letters="abcdefghjklmnopqrst"[:self.size]
-					
+					letters="ABCDEFGHJKLMNOPQRST"[:self.size]
 					for value,letter in zip(line,letters):
 						i,j=gtp2ij(letter+str(number_coordinate))
 						if value in ("X","x"):
@@ -311,13 +261,22 @@ class Pachi_gtp(gtp):
 					pass
 			if "Score Est: " in err_line:
 				position_evaluation["estimated score"]=err_line.split("Score Est: ")[1]
+			if '{"frame": ' in err_line:
+				json=json_loads(err_line)
+				move=json["frame"]["can"][0]
+				position_evaluation["best move"]=move[0].keys()[0]
+				if type(move[0].values()[0])==type(0.5):
+					winrate=move[0].values()[0]
+					position_evaluation["win rate"]=str(100*float(winrate))+"%"
+				elif type(move[0].values()[0])==type([0,1]):
+					winrate, playouts=move[0].values()[0]
+					position_evaluation["win rate"]=str(100*float(winrate))+"%"
+
+					
 			if '{"move": ' in err_line:
 				found=True
 				#this line is the json report line
 				#exemple: {"move": {"playouts": 5064, "extrakomi": 0.0, "choice": "H8", "can": [[{"H8":0.792},{"F2":0.778},{"G6":0.831},{"G7":0.815}], [{"K14":0.603},{"L13":0.593},{"M13":0.627},{"K13":0.593}], [{"M15":0.603},{"L13":0.724},{"M13":0.778},{"K13":0.700}], [{"M14":0.627},{"M15":0.647},{"N15":0.596}]]}}
-				"""print
-				print err_line
-				print"""
 				json=json_loads(err_line)
 				position_evaluation["playouts"]=json["move"]["playouts"]
 				for move in json["move"]["can"]:
@@ -350,10 +309,7 @@ class Pachi_gtp(gtp):
 			log("\n")
 		#print "len(influence)",len(influence),number_coordinate
 		position_evaluation["influence"]=influence
-		"""for i in range(self.size):
-			for j in range(self.size):
-				print influence[i][j],
-			print"""
+
 		return position_evaluation
 
 
@@ -412,7 +368,7 @@ class PachiSettings(BotProfiles):
 		
 	def change_selection(self):
 		try:
-			index=self.listbox.curselection()[0]
+			index=int(self.listbox.curselection()[0])
 			self.index=index
 		except:
 			log("No selection")
@@ -469,7 +425,7 @@ class PachiOpenMove(BotOpenMove):
 
 Pachi={}
 Pachi['name']="Pachi"
-Pachi['gtp_name']="Pachi UCT"
+Pachi['gtp_name']="Pachi"
 Pachi['analysis']=PachiAnalysis
 Pachi['openmove']=PachiOpenMove
 Pachi['settings']=PachiSettings
